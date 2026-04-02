@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 5050;
 
 // Use the cors middleware
 app.use(cors({
-    origin: ['http://localhost:3000','http://localhost:5173','https://sm-glamx-frontend.vercel.app','https://sm-glamx-frontend.vercel.app/'], // Replace with your actual frontend domain
+    origin: ['http://localhost:3000','http://localhost:5173','https://sm-dinini-electricals-frontend.vercel.app','https://sm-dinini-electricals-frontend.vercel.app/'], // Replace with your actual frontend domain
     credentials: true, // Enable credentials (cookies, authorization headers, etc.)
   }));
 
