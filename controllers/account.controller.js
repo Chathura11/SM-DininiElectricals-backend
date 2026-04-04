@@ -29,12 +29,32 @@ exports.addAssetMoney = async (req, res) => {
   }
 };
 
+// ✅ GET MONEY ASSETS
+exports.getMoneyAssets = async (req, res) => {
+  try {
+    const data = await accountService.getMoneyAssetsService();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 exports.addExpense = async (req, res) => {
   try {
     const journal = await accountService.addExpense(req.body);
     res.status(200).json({ message: 'Expense recorded successfully', journal });
   } catch (err) {
     res.status(500).json({ message: 'Error recording expense', error: err.message });
+  }
+};
+
+// ✅ GET EXPENSES
+exports.getExpenses = async (req, res) => {
+  try {
+    const data = await accountService.getExpensesService();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 };
 
