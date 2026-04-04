@@ -7,6 +7,10 @@ const salesTransactionSchema = new Schema({
         ref: 'User', 
         required: true 
     }, // staff who made the sale
+    invoiceNo: {
+        type: String,
+        unique: true
+    },
     customerName: { 
         type: String 
     }, // optional field for walk-in or named customer

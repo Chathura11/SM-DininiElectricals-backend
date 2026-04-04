@@ -51,8 +51,11 @@ async function createSalesTransaction({ userId, customerName, paymentMethod, sta
     // ✅ Final profit after discount
     const totalProfitAfterDiscount = (totalAmount - discount) - totalCost;
 
+    const invoiceNo = await generateInvoiceNo();
+
     const salesTransaction = new SalesTransaction({
       user: userId,
+      invoiceNo,
       customerName,
       totalAmount,
       totalProfit: totalProfitAfterDiscount,
@@ -287,3 +290,23 @@ module.exports = {
   markTransactionCompleted,
   getTransactionWithItems 
 };
+
+
+async function generateInvoiceNo() {
+  const now = new Date();
+  const yearMonth = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+  // Find last invoice of this month
+  const lastInvoice = await SalesTransaction.findOne({
+    invoiceNo: { $regex: `^INV-${yearMonth}` }
+  }).sort({ createdAt: -1 });
+
+  if (!lastInvoice) {
+    return `INV-${yearMonth}-0001`;
+  }
+
+  const lastNumber = parseInt(lastInvoice.invoiceNo.split('-')[2]);
+  const newNumber = lastNumber + 1;
+
+  return `INV-${yearMonth}-${String(newNumber).padStart(4, '0')}`;
+}
