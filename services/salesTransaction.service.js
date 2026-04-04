@@ -81,7 +81,9 @@ async function createSalesTransaction({ userId, customerName, paymentMethod, sta
     await accountService.recordSale({
       salePrice: saleAmount,
       costPrice: totalCost,
-      customerName
+      customerName,
+      status,
+      updateInventory: true  // ✅ only update Cash & Sales
     });
 
     await session.commitTransaction();
@@ -215,9 +217,9 @@ async function reverseTransaction(transactionId, userId) {
   }
 }
 
-async function markTransactionCompleted (transactionId){
+async function markTransactionCompleted(transactionId) {
   const transaction = await SalesTransaction.findById(transactionId);
-  
+
   if (!transaction) {
     const error = new Error('Transaction not found');
     error.status = 404;
@@ -230,11 +232,33 @@ async function markTransactionCompleted (transactionId){
     throw error;
   }
 
+  // Update status to Completed
   transaction.status = 'Completed';
   await transaction.save();
 
+  // ✅ Fetch items to calculate total sale amount and total cost
+  const items = await TransactionItem.find({ transaction: transactionId });
+  let totalAmount = 0;
+  let totalCost = 0;
+
+  for (const item of items) {
+    totalAmount += item.sellingPrice * item.quantity;
+    totalCost += item.costPrice * item.quantity;
+  }
+
+  const saleAmount = totalAmount - (transaction.discount || 0);
+
+  // ✅ Update accounts now that sale is completed
+  await accountService.recordSale({
+    salePrice: saleAmount,
+    costPrice: totalCost,
+    customerName: transaction.customerName,
+    status: 'Completed', // ensures cash & sales are updated
+    updateInventory: false  // ✅ only update Cash & Sales
+  });
+
   return transaction;
-};
+}
 
 async function getTransactionWithItems(transactionId){
   const transaction = await SalesTransaction.findById(transactionId)

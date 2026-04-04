@@ -63,7 +63,8 @@ exports.createStockEntry = async (data, user) => {
     stockEntry[0].totalAmount = totalAmount;
     await stockEntry[0].save({ session });
 
-    await accountService.buyStock(totalAmount, session);
+    // await accountService.buyStock(totalAmount, session);//before credit
+    await accountService.buyStock(totalAmount, session, supplier);//after credit
 
     await session.commitTransaction();
     session.endSession();

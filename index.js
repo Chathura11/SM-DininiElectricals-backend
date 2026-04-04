@@ -35,6 +35,7 @@ const salesRouter = require('./routes/sales.routes');
 const salesReturnRouter = require('./routes/salesReturn.routes');
 const inventoryRouter = require('./routes/inventory.routes');
 const accountRouter = require('./routes/account.routes');
+const supplierPaymentRouter = require('./routes/supplierPayment.routes');
 
 
 //user model
@@ -51,6 +52,7 @@ app.use('/api/sales',salesRouter);
 app.use('/api/inventories', inventoryRouter);
 app.use('/api/accounts',accountRouter);
 app.use('/api/sales-return',salesReturnRouter);
+app.use('/api/supplier-payments',supplierPaymentRouter);
 
 app.listen(PORT,()=>{
     console.log(`Server is up and run on port ${PORT}`);

@@ -79,7 +79,8 @@ async function seedDatabase() {
       { name: 'COGS', type: 'Expense', balance: 0 },
       { name: "Owner's Equity", type: 'Liability', balance: 0 },
       { name: 'Salary Expense', type: 'Expense', balance: 0 },
-      { name: 'Additional Expense', type: 'Expense', balance: 0 }
+      { name: 'Additional Expense', type: 'Expense', balance: 0 },
+      { name: "Accounts Payable", type: 'Liability', balance: 0 }
     ]);
 
     console.log('Database seeded successfully.');
