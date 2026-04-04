@@ -3,7 +3,6 @@ const Schema = mongoose.Schema;
 
 const returnItemSchema = new Schema({
   product: { type: Schema.Types.ObjectId, ref: 'Product', required: true },
-  size: { type: String, required: true },
   quantity: { type: Number, required: true },
   reason: { type: String },
 });

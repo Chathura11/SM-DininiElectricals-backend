@@ -23,35 +23,32 @@ exports.processReturn = async ({ transactionId, items, userId }) => {
       const originalItems = await TransactionItem.find({ transaction: transactionId }).session(session);
       const isFree = transaction.status === 'Free';
 
+      // Total amount of original sale for discount calculations
+      const originalTotalAmount = originalItems.reduce(
+        (sum, i) => sum + i.sellingPrice * i.quantity,
+        0
+      );
+      const totalDiscount = transaction.discount || 0;
+
       let totalReturnAmount = 0;
       let totalReturnCost = 0;
       const journalEntries = [];
 
       for (const returnItem of items) {
-        // ✅ Match ONLY by product
+        // ✅ Match only by product
         const match = originalItems.find(
           i => i.product.toString() === returnItem.product
         );
-
         if (!match) throw new Error(`Product not found in original transaction`);
 
         const productId = new mongoose.Types.ObjectId(match.product);
 
-        // ✅ Check previous returns (NO SIZE)
+        // ✅ Check previous returns
         const totalPreviousReturns = await SalesReturn.aggregate([
           { $match: { transaction: new mongoose.Types.ObjectId(transaction._id) } },
           { $unwind: '$items' },
-          {
-            $match: {
-              'items.product': productId
-            }
-          },
-          {
-            $group: {
-              _id: null,
-              total: { $sum: '$items.quantity' }
-            }
-          }
+          { $match: { 'items.product': productId } },
+          { $group: { _id: null, total: { $sum: '$items.quantity' } } }
         ]).session(session);
 
         const alreadyReturnedQty = totalPreviousReturns[0]?.total || 0;
@@ -61,9 +58,8 @@ exports.processReturn = async ({ transactionId, items, userId }) => {
           throw new Error(`Return quantity exceeds sold quantity`);
         }
 
-        // ✅ Update Inventory (NO SIZE)
+        // ✅ Update Inventory
         let inventory = await Inventory.findOne({ product: returnItem.product }).session(session);
-
         if (!inventory) {
           inventory = await Inventory.create([{
             product: returnItem.product,
@@ -75,8 +71,9 @@ exports.processReturn = async ({ transactionId, items, userId }) => {
           await inventory.save({ session });
         }
 
-        // ✅ Calculations
-        const returnAmount = match.sellingPrice * returnItem.quantity;
+        // ✅ Calculate return amount (consider discount)
+        const discountedUnitPrice = match.sellingPrice - (match.sellingPrice * totalDiscount / originalTotalAmount);
+        const returnAmount = discountedUnitPrice * returnItem.quantity;
         const returnCost = match.costPrice * returnItem.quantity;
 
         totalReturnAmount += returnAmount;
@@ -93,9 +90,14 @@ exports.processReturn = async ({ transactionId, items, userId }) => {
         returnedBy: userId
       }], { session });
 
+      // ✅ Update original transaction status to Returned
+      transaction.status = 'Returned';
+      await transaction.save({ session });
+
       // ================= ACCOUNTING =================
 
       if (!isFree && totalReturnAmount > 0) {
+        // Paid sale return
         const [cash, sales, inventoryAcc, cogs] = await Promise.all([
           Account.findOne({ name: 'Cash' }).session(session),
           Account.findOne({ name: 'Sales Revenue' }).session(session),
@@ -135,8 +137,8 @@ exports.processReturn = async ({ transactionId, items, userId }) => {
         await JournalEntry.insertMany(journalEntries, { session });
       }
 
-      // ✅ FREE SALE RETURN
       if (isFree) {
+        // Free sale return
         const inventoryAcc = await Account.findOne({ name: 'Inventory' }).session(session);
         const cogsAcc = await Account.findOne({ name: 'COGS' }).session(session);
 

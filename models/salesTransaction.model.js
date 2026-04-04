@@ -29,7 +29,7 @@ const salesTransactionSchema = new Schema({
     },
     status: { 
         type: String, 
-        enum: ['Completed', 'Cancelled','Pending','Free'], 
+        enum: ['Completed', 'Cancelled','Pending','Free','Returned'], 
         default: 'Completed' 
     },
     createdAt: { 
