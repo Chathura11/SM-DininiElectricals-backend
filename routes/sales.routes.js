@@ -9,8 +9,8 @@ router.get('/', isAuthenticated, getAllTransactionsController);
 
 router.get('/:id',isAuthenticated, getSalesTransactionById);
 
-router.put('/reverse/:id',isAuthenticated, reverseTransaction);
+router.put('/reverse/:id',isAuthenticated,checkPermission('configure_settings'), reverseTransaction);
 
-router.put('/mark-completed/:id',isAuthenticated,  markTransactionCompleted);
+router.put('/mark-completed/:id',isAuthenticated,checkPermission('configure_settings'),  markTransactionCompleted);
 
 module.exports = router;

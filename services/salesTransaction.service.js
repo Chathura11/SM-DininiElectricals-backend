@@ -140,9 +140,13 @@ async function reverseTransaction(transactionId, userId) {
     if (!transaction) throw new Error('Transaction not found');
     if (transaction.status === 'Cancelled') throw new Error('Already cancelled');
 
-    const totalSale = transaction.status === 'Free'
-    ? 0
-    : (transaction.totalAmount - (transaction.discount || 0));
+    const isCompleted = transaction.status === 'Completed';
+    const isFree = transaction.status === 'Free';
+    const isPending = transaction.status === 'Pending';
+
+    const totalSale = (isCompleted && !isFree)
+      ? transaction.totalAmount
+      : 0;
 
     transaction.status = 'Cancelled';
     transaction.reversedBy = userId;
@@ -153,6 +157,7 @@ async function reverseTransaction(transactionId, userId) {
 
     let totalCost = 0;
 
+    // ================= INVENTORY =================
     for (const item of items) {
       const inventory = await Inventory.findOne({ product: item.product }).session(session);
 
@@ -167,22 +172,30 @@ async function reverseTransaction(transactionId, userId) {
         await inventory.save({ session });
       }
 
-      totalCost += item.costPrice * item.quantity;
+      totalCost += (Number(item.costPrice) || 0) * (Number(item.quantity) || 0);
     }
 
-    // === ACCOUNTING ===
-    const cash = await Account.findOne({ name: 'Cash' }).session(session);
-    const sales = await Account.findOne({ name: 'Sales Revenue' }).session(session);
-    const inventoryAcc = await Account.findOne({ name: 'Inventory' }).session(session);
-    const cogs = await Account.findOne({ name: 'COGS' }).session(session);
+    // ================= ACCOUNTING =================
 
-    if (!cash || !sales || !inventoryAcc || !cogs) {
+    const [cash, sales, inventoryAcc, cogs] = await Promise.all([
+      Account.findOne({ name: 'Cash' }).session(session),
+      Account.findOne({ name: 'Sales Revenue' }).session(session),
+      Account.findOne({ name: 'Inventory' }).session(session),
+      Account.findOne({ name: 'COGS' }).session(session),
+    ]);
+
+    if (!inventoryAcc || !cogs) {
       throw new Error('Accounts not found');
     }
 
     const journalEntries = [];
 
-    if (totalSale > 0) {
+    // ✅ 1. Reverse revenue ONLY for completed (non-free)
+    if (isCompleted && !isFree && totalSale > 0) {
+      if (!cash || !sales) {
+        throw new Error('Accounts not found');
+      }
+
       cash.balance -= totalSale;
       sales.balance -= totalSale;
 
@@ -193,20 +206,36 @@ async function reverseTransaction(transactionId, userId) {
       });
     }
 
-    inventoryAcc.balance += totalCost;
-    cogs.balance -= totalCost;
+    // ✅ 2. ALWAYS reverse inventory & COGS (VERY IMPORTANT FIX)
+    if (isPending || isCompleted || isFree) {
+      inventoryAcc.balance += totalCost;
+      cogs.balance -= totalCost;
 
-    journalEntries.push({
-      description: `Reversal - Inventory Restore ${transactionId}`,
-      debit: { account: inventoryAcc._id, amount: totalCost },
-      credit: { account: cogs._id, amount: totalCost }
-    });
+      journalEntries.push({
+        description: `Reversal - Inventory Restore ${transactionId}`,
+        debit: { account: inventoryAcc._id, amount: totalCost },
+        credit: { account: cogs._id, amount: totalCost }
+      });
+    }
 
-    const updates = [inventoryAcc.save({ session }), cogs.save({ session })];
-    if (totalSale > 0) updates.push(cash.save({ session }), sales.save({ session }));
+    // ================= SAVE =================
+    const updates = [
+      inventoryAcc.save({ session }),
+      cogs.save({ session })
+    ];
+
+    if (isCompleted && !isFree && totalSale > 0) {
+      updates.push(
+        cash.save({ session }),
+        sales.save({ session })
+      );
+    }
 
     await Promise.all(updates);
-    await JournalEntry.insertMany(journalEntries, { session });
+
+    if (journalEntries.length > 0) {
+      await JournalEntry.insertMany(journalEntries, { session });
+    }
 
     await session.commitTransaction();
     session.endSession();
@@ -219,7 +248,6 @@ async function reverseTransaction(transactionId, userId) {
     throw err;
   }
 }
-
 async function markTransactionCompleted(transactionId) {
   const transaction = await SalesTransaction.findById(transactionId);
 
@@ -235,29 +263,45 @@ async function markTransactionCompleted(transactionId) {
     throw error;
   }
 
-  // Update status to Completed
+  // ✅ Update status
   transaction.status = 'Completed';
   await transaction.save();
 
-  // ✅ Fetch items to calculate total sale amount and total cost
+  // ✅ Fetch items
   const items = await TransactionItem.find({ transaction: transactionId });
+
   let totalAmount = 0;
   let totalCost = 0;
+  let totalProfit = 0;
 
   for (const item of items) {
-    totalAmount += item.sellingPrice * item.quantity;
-    totalCost += item.costPrice * item.quantity;
+    const qty = Number(item.quantity) || 0;
+    const selling = Number(item.sellingPrice) || 0;
+    const cost = Number(item.costPrice) || 0;
+    const discount = Number(item.discount) || 0;
+
+    const itemTotal = selling * qty;
+    const itemTotalAfterDiscount = itemTotal - discount;
+    const itemCost = cost * qty;
+    const profit = itemTotalAfterDiscount - itemCost;
+
+    totalAmount += itemTotalAfterDiscount;
+    totalCost += itemCost;
+    totalProfit += profit;
   }
 
-  const saleAmount = totalAmount - (transaction.discount || 0);
+  // ✅ Optional: update totals in transaction (recommended)
+  transaction.totalAmount = totalAmount;
+  transaction.totalProfit = totalProfit;
+  await transaction.save();
 
-  // ✅ Update accounts now that sale is completed
+  // ✅ Accounting
   await accountService.recordSale({
-    salePrice: saleAmount,
+    salePrice: totalAmount, // already discounted
     costPrice: totalCost,
     customerName: transaction.customerName,
-    status: 'Completed', // ensures cash & sales are updated
-    updateInventory: false  // ✅ only update Cash & Sales
+    status: 'Completed',
+    updateInventory: false
   });
 
   return transaction;

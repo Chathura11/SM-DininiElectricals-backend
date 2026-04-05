@@ -13,6 +13,7 @@ exports.processReturn = async ({ transactionId, items, userId }) => {
     let returnDoc = null;
 
     await session.withTransaction(async () => {
+
       const transaction = await SalesTransaction.findById(transactionId).session(session);
       if (!transaction) throw new Error('Original transaction not found');
 
@@ -21,29 +22,26 @@ exports.processReturn = async ({ transactionId, items, userId }) => {
       }
 
       const originalItems = await TransactionItem.find({ transaction: transactionId }).session(session);
-      const isFree = transaction.status === 'Free';
 
-      // Total amount of original sale for discount calculations
-      const originalTotalAmount = originalItems.reduce(
-        (sum, i) => sum + i.sellingPrice * i.quantity,
-        0
-      );
-      const totalDiscount = transaction.discount || 0;
+      const isFree = transaction.status === 'Free';
+      const isPending = transaction.status === 'Pending';
+      const isCompleted = transaction.status === 'Completed';
 
       let totalReturnAmount = 0;
       let totalReturnCost = 0;
-      const journalEntries = [];
 
+      // ================= PROCESS ITEMS =================
       for (const returnItem of items) {
-        // ✅ Match only by product
+
         const match = originalItems.find(
           i => i.product.toString() === returnItem.product
         );
+
         if (!match) throw new Error(`Product not found in original transaction`);
 
         const productId = new mongoose.Types.ObjectId(match.product);
 
-        // ✅ Check previous returns
+        // ✅ Validate previous returns
         const totalPreviousReturns = await SalesReturn.aggregate([
           { $match: { transaction: new mongoose.Types.ObjectId(transaction._id) } },
           { $unwind: '$items' },
@@ -58,10 +56,11 @@ exports.processReturn = async ({ transactionId, items, userId }) => {
           throw new Error(`Return quantity exceeds sold quantity`);
         }
 
-        // ✅ Update Inventory
+        // ================= INVENTORY UPDATE =================
         let inventory = await Inventory.findOne({ product: returnItem.product }).session(session);
+
         if (!inventory) {
-          inventory = await Inventory.create([{
+          await Inventory.create([{
             product: returnItem.product,
             quantity: returnItem.quantity
           }], { session });
@@ -71,41 +70,71 @@ exports.processReturn = async ({ transactionId, items, userId }) => {
           await inventory.save({ session });
         }
 
-        // ✅ Calculate return amount (consider discount)
-        const itemTotal = match.sellingPrice * match.quantity;
-        const itemDiscount = match.discount || 0;
+        // ================= CALCULATIONS =================
 
-        // Discount per unit
-        const discountPerUnit = itemDiscount / match.quantity;
+        const discountPerUnit = (match.discount || 0) / match.quantity;
 
         const returnAmount =
           (match.sellingPrice - discountPerUnit) * returnItem.quantity;
 
-        const returnCost = match.costPrice * returnItem.quantity;
+        const returnCost =
+          match.costPrice * returnItem.quantity;
 
         totalReturnAmount += returnAmount;
         totalReturnCost += returnCost;
       }
 
-      // ✅ Save return document
+      // ================= SAVE RETURN =================
       returnDoc = await SalesReturn.create([{
         transaction: transactionId,
         items: items.map(i => ({
           product: i.product,
           quantity: i.quantity,
-          reason:i.reason
+          reason: i.reason
         })),
         returnedBy: userId
       }], { session });
 
-      // ✅ Update original transaction status to Returned
-      transaction.status = 'Returned';
+      // ================= STATUS UPDATE =================
+      if (isPending) {
+        transaction.status = 'Cancelled'; // better than Returned
+      } else {
+        transaction.status = 'Returned';
+      }
+
       await transaction.save({ session });
 
       // ================= ACCOUNTING =================
 
-      if (!isFree && totalReturnAmount > 0) {
-        // Paid sale return
+      // 🔵 CASE 1: PENDING → ONLY INVENTORY + COGS
+      if (isPending) {
+        const inventoryAcc = await Account.findOne({ name: 'Inventory' }).session(session);
+        const cogsAcc = await Account.findOne({ name: 'COGS' }).session(session);
+
+        if (!inventoryAcc || !cogsAcc) {
+          throw new Error('Accounts not found');
+        }
+
+        inventoryAcc.balance += totalReturnCost;
+        cogsAcc.balance -= totalReturnCost;
+
+        await Promise.all([
+          inventoryAcc.save({ session }),
+          cogsAcc.save({ session })
+        ]);
+
+        await JournalEntry.create([{
+          description: `Pending Sale Return - Restore inventory`,
+          debit: { account: inventoryAcc._id, amount: totalReturnCost },
+          credit: { account: cogsAcc._id, amount: totalReturnCost }
+        }], { session });
+
+        return;
+      }
+
+      // 🟢 CASE 2: COMPLETED → FULL REVERSAL
+      if (isCompleted && totalReturnAmount > 0) {
+
         const [cash, sales, inventoryAcc, cogs] = await Promise.all([
           Account.findOne({ name: 'Cash' }).session(session),
           Account.findOne({ name: 'Sales Revenue' }).session(session),
@@ -117,6 +146,7 @@ exports.processReturn = async ({ transactionId, items, userId }) => {
           throw new Error('Required accounts not found');
         }
 
+        // Reverse entries
         cash.balance -= totalReturnAmount;
         sales.balance -= totalReturnAmount;
         inventoryAcc.balance += totalReturnCost;
@@ -129,7 +159,7 @@ exports.processReturn = async ({ transactionId, items, userId }) => {
           cogs.save({ session })
         ]);
 
-        journalEntries.push(
+        await JournalEntry.insertMany([
           {
             description: `Sales Return - Refund for ${transaction.customerName}`,
             debit: { account: sales._id, amount: totalReturnAmount },
@@ -140,17 +170,17 @@ exports.processReturn = async ({ transactionId, items, userId }) => {
             debit: { account: inventoryAcc._id, amount: totalReturnCost },
             credit: { account: cogs._id, amount: totalReturnCost }
           }
-        );
-
-        await JournalEntry.insertMany(journalEntries, { session });
+        ], { session });
       }
 
+      // 🟡 CASE 3: FREE → ONLY INVENTORY + COGS
       if (isFree) {
-        // Free sale return
         const inventoryAcc = await Account.findOne({ name: 'Inventory' }).session(session);
         const cogsAcc = await Account.findOne({ name: 'COGS' }).session(session);
 
-        if (!inventoryAcc || !cogsAcc) throw new Error('Accounts not found');
+        if (!inventoryAcc || !cogsAcc) {
+          throw new Error('Accounts not found');
+        }
 
         inventoryAcc.balance += totalReturnCost;
         cogsAcc.balance -= totalReturnCost;
@@ -166,6 +196,7 @@ exports.processReturn = async ({ transactionId, items, userId }) => {
           credit: { account: cogsAcc._id, amount: totalReturnCost }
         }], { session });
       }
+
     });
 
     return returnDoc?.[0];
