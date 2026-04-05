@@ -315,7 +315,7 @@ exports.getAnalytics = async (year) => {
   const salesData = await SalesTransaction.aggregate([
     {
       $match: {
-        status: { $in: ['Completed','Pending','Free'] },
+        status: { $in: ['Completed'] }, // <-- only completed
         reversedBy: null,
         createdAt: { $gte: start, $lte: end }
       }
