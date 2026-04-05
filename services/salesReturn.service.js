@@ -72,8 +72,15 @@ exports.processReturn = async ({ transactionId, items, userId }) => {
         }
 
         // ✅ Calculate return amount (consider discount)
-        const discountedUnitPrice = match.sellingPrice - (match.sellingPrice * totalDiscount / originalTotalAmount);
-        const returnAmount = discountedUnitPrice * returnItem.quantity;
+        const itemTotal = match.sellingPrice * match.quantity;
+        const itemDiscount = match.discount || 0;
+
+        // Discount per unit
+        const discountPerUnit = itemDiscount / match.quantity;
+
+        const returnAmount =
+          (match.sellingPrice - discountPerUnit) * returnItem.quantity;
+
         const returnCost = match.costPrice * returnItem.quantity;
 
         totalReturnAmount += returnAmount;
@@ -85,7 +92,8 @@ exports.processReturn = async ({ transactionId, items, userId }) => {
         transaction: transactionId,
         items: items.map(i => ({
           product: i.product,
-          quantity: i.quantity
+          quantity: i.quantity,
+          reason:i.reason
         })),
         returnedBy: userId
       }], { session });

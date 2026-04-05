@@ -1,4 +1,4 @@
-const {CreateProduct,GetAllProducts,UpdateProduct} = require('../services/product.service');
+const {CreateProduct,GetAllProducts,UpdateProduct,processExcel} = require('../services/product.service');
 
 exports.CreateProduct = async (req,res)=>{
     try {
@@ -30,3 +30,28 @@ exports.UpdateProduct = async (req,res)=>{
         res.status(500).json({success:0,data:error.message})
     }
 }
+
+exports.uploadExcelProducts = async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          message: "No file uploaded"
+        });
+      }
+  
+      const result = await processExcel(req.file);
+  
+      return res.status(200).json({
+        success: true,
+        message: "Products uploaded successfully",
+        count: result.count
+      });
+  
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message
+      });
+    }
+  };

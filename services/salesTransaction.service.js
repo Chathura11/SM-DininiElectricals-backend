@@ -8,13 +8,14 @@ const accountService = require('./account.service.js');
 const JournalEntry = require('../models/journal.model');
 const Account = require('../models/account.model');
 
-async function createSalesTransaction({ userId, customerName, paymentMethod, status, items, discount = 0 }) {
+async function createSalesTransaction({ userId, customerName, paymentMethod, status, items }) {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
     let totalAmount = 0;
     let totalCost = 0;
+    let totalProfit = 0;
 
     const transactionItems = [];
 
@@ -23,33 +24,35 @@ async function createSalesTransaction({ userId, customerName, paymentMethod, sta
       if (!product) throw new Error(`Product not found`);
 
       const inventory = await Inventory.findOne({ product: product._id }).session(session);
-      if (!inventory) throw new Error(`Inventory not found for ${product.name}`);
+      if (!inventory) throw new Error(`Inventory not found`);
 
-      if (inventory.quantity < item.quantity) {
-        throw new Error(`Not enough stock for ${product.name}`);
-      }
+      if (inventory.quantity < item.quantity) throw new Error(`Not enough stock`);
 
-      // ✅ Reduce inventory
       inventory.quantity -= item.quantity;
-      inventory.lastUpdated = new Date();
       await inventory.save({ session });
 
-      totalAmount += item.sellingPrice * item.quantity;
-      totalCost += item.costPrice * item.quantity;
+      const itemQuantity = Number(item.quantity) || 0;
+      const itemSelling = Number(item.sellingPrice) || 0;
+      const itemCost = Number(item.costPrice) || 0;
+      const itemDiscount = Number(item.discount) || 0;
 
-      const profitBeforeDiscount = (item.sellingPrice - item.costPrice) * item.quantity;
+      const itemTotal = itemSelling * itemQuantity;
+      const itemTotalAfterDiscount = itemTotal - itemDiscount;
+      const profit = itemTotalAfterDiscount - itemCost * itemQuantity;
+
+      totalAmount += itemTotalAfterDiscount;
+      totalCost += itemCost * itemQuantity;
+      totalProfit += profit;
 
       transactionItems.push({
         product: product._id,
-        quantity: item.quantity,
-        sellingPrice: item.sellingPrice,
-        costPrice: item.costPrice,
-        profit: profitBeforeDiscount
+        quantity: itemQuantity,
+        sellingPrice: itemSelling,
+        costPrice: itemCost,
+        discount: itemDiscount,
+        profit
       });
     }
-
-    // ✅ Final profit after discount
-    const totalProfitAfterDiscount = (totalAmount - discount) - totalCost;
 
     const invoiceNo = await generateInvoiceNo();
 
@@ -58,15 +61,14 @@ async function createSalesTransaction({ userId, customerName, paymentMethod, sta
       invoiceNo,
       customerName,
       totalAmount,
-      totalProfit: totalProfitAfterDiscount,
-      discount,
+      totalProfit,
+      discount: 0, // overall discount can be handled separately
       paymentMethod,
       status,
     });
 
     await salesTransaction.save({ session });
 
-    // ✅ Save transaction items
     for (const item of transactionItems) {
       await TransactionItem.create([{
         transaction: salesTransaction._id,
@@ -74,26 +76,24 @@ async function createSalesTransaction({ userId, customerName, paymentMethod, sta
         quantity: item.quantity,
         sellingPrice: item.sellingPrice,
         costPrice: item.costPrice,
+        discount: item.discount,
         profit: item.profit
       }], { session });
     }
 
-    const saleAmount = status === 'Free' ? 0 : (totalAmount - discount);
-
-    // ✅ Accounting
+    // Accounting
     await accountService.recordSale({
-      salePrice: saleAmount,
+      salePrice: status === 'Free' ? 0 : totalAmount,
       costPrice: totalCost,
       customerName,
       status,
-      updateInventory: true  // ✅ only update Cash & Sales
+      updateInventory: true
     });
 
     await session.commitTransaction();
     session.endSession();
 
     return salesTransaction;
-
   } catch (error) {
     await session.abortTransaction();
     session.endSession();

@@ -27,6 +27,10 @@ const transactionItemSchema = new Schema({
     required: true,
     min: 0
   },
+  discount: { 
+    type: Number, 
+    default: 0 
+  },
   profit: { 
     type: Number, 
     required: true 
