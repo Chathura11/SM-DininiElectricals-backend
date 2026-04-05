@@ -2,6 +2,7 @@ const Account = require('../models/account.model.js');
 const JournalEntry = require('../models/journal.model.js');
 const Expense = require('../models/expense.model');
 const MoneyAsset = require('../models/moneyAsset.model');
+const SalesTransaction = require('../models/salesTransaction.model');
 
 //before create credit
 // exports.buyStock = async (amount, session = null) => {
@@ -291,6 +292,84 @@ exports.getExpensesService = async () => {
   };
 
 
+//reports
+exports.getAnalytics = async (year) => {
+  const monthNames = [
+    'January','February','March','April','May','June',
+    'July','August','September','October','November','December'
+  ];
+
+  // Initialize months
+  const months = Array.from({ length: 12 }, () => ({
+    sales: 0,
+    salaryExp: 0,
+    additionalExp: 0,
+    totalExpenses: 0,
+    profit: 0
+  }));
+
+  const start = new Date(`${year}-01-01T00:00:00.000Z`);
+  const end = new Date(`${year}-12-31T23:59:59.999Z`);
+
+  // --- 1️⃣ Sales per month ---
+  const salesData = await SalesTransaction.aggregate([
+    {
+      $match: {
+        status: { $in: ['Completed','Pending','Free'] },
+        reversedBy: null,
+        createdAt: { $gte: start, $lte: end }
+      }
+    },
+    {
+      $group: {
+        _id: { month: { $month: '$createdAt' } },
+        totalSales: { $sum: { $ifNull: ['$totalAmount', 0] } },
+        totalProfit: { $sum: { $ifNull: ['$totalProfit', 0] } }
+      }
+    }
+  ]);
+
+  salesData.forEach(s => {
+    const idx = s._id.month - 1;
+    months[idx].sales = s.totalSales || 0;
+    months[idx].profit = s.totalProfit || 0;
+  });
+
+  // --- 2️⃣ Expenses per month ---
+  const expenseEntries = await Expense.find({
+    category: { $in: ['Salary Expense','Additional Expense'] },
+    date: { $gte: start, $lte: end }
+  }).lean(); // Convert to plain objects
+
+  expenseEntries.forEach(exp => {
+    if (!exp.amount) return; // skip invalid
+    const idx = new Date(exp.date).getMonth();
+    const amount = Number(exp.amount) || 0;
+
+    if (exp.category === 'Salary Expense') months[idx].salaryExp += amount;
+    if (exp.category === 'Additional Expense') months[idx].additionalExp += amount;
+  });
+
+  // --- 3️⃣ Total expenses and adjust profit ---
+  months.forEach(m => {
+    const salesMinusProfit = (m.sales || 0) - (m.profit || 0);
+    const salary = m.salaryExp || 0;
+    const additional = m.additionalExp || 0;
+
+    m.totalExpenses = salesMinusProfit + salary + additional;
+    m.profit = (m.sales || 0) - m.totalExpenses;
+  });
+
+  // --- 4️⃣ Format and return ---
+  return months.map((m, i) => ({
+    month: monthNames[i],
+    sales: Number(m.sales.toFixed(2)),
+    salaryExp: Number((m.salaryExp || 0).toFixed(2)),
+    additionalExp: Number((m.additionalExp || 0).toFixed(2)),
+    totalExpenses: Number((m.totalExpenses || 0).toFixed(2)),
+    profit: Number((m.profit || 0).toFixed(2))
+  }));
+};
 
   async function generateExpenseVoucherNo() {
     const currentYearMonth = new Date().toISOString().slice(0, 7).replace('-', ''); // YYYYMM

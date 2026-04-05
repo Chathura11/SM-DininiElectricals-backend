@@ -78,3 +78,20 @@ exports.getAllJournalEntries = async (req, res) => {
     });
   }
 };
+
+exports.getAnalytics = async (req, res) => {
+  try {
+    const year = parseInt(req.query.year);
+
+    if (!year) {
+      return res.status(400).json({ message: 'Year is required' });
+    }
+
+    const data = await accountService.getAnalytics(year);
+
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error fetching analytics' });
+  }
+};
