@@ -3,7 +3,7 @@ const router = express.Router();
 const { CreateStockEntry,GetAllStockEntries,GetAllStockEntryItems,getFIFOCost,getAllStockEntriesDetailed } = require('../controllers/stockEntry.controller');
 const { isAuthenticated, checkPermission } = require('../middleware/middleware');
 
-router.post('/stock-entries',isAuthenticated, CreateStockEntry);
+router.post('/stock-entries',isAuthenticated,checkPermission('manage_inventory'), CreateStockEntry);
 
 router.get('/stock-entries',isAuthenticated, GetAllStockEntries);
 

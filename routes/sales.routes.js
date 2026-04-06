@@ -3,14 +3,14 @@ const router = express.Router();
 const { createTransactionController,getAllTransactionsController,reverseTransaction,markTransactionCompleted,getSalesTransactionById } = require('../controllers/salesTransaction.controller');
 const { isAuthenticated, checkPermission } = require('../middleware/middleware');
 
-router.post('/', isAuthenticated,createTransactionController);
+router.post('/', isAuthenticated,checkPermission('process_transaction'),createTransactionController);
 
-router.get('/', isAuthenticated, getAllTransactionsController);
+router.get('/',isAuthenticated,checkPermission('process_transaction'), getAllTransactionsController);
 
-router.get('/:id',isAuthenticated, getSalesTransactionById);
+router.get('/:id',isAuthenticated,checkPermission('process_transaction'), getSalesTransactionById);
 
-router.put('/reverse/:id',isAuthenticated,checkPermission('configure_settings'), reverseTransaction);
+router.put('/reverse/:id',isAuthenticated,checkPermission('process_returns'), reverseTransaction);
 
-router.put('/mark-completed/:id',isAuthenticated,checkPermission('configure_settings'),  markTransactionCompleted);
+router.put('/mark-completed/:id',isAuthenticated,checkPermission('process_transaction'),  markTransactionCompleted);
 
 module.exports = router;

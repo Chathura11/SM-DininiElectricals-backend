@@ -4,8 +4,8 @@ const router = require('express').Router();
 const controller = require('../controllers/supplierPayment.controller');
 const { isAuthenticated, checkPermission } = require('../middleware/middleware');
 
-router.post('/',isAuthenticated, controller.makePayment);
-router.get('/',isAuthenticated, controller.getAllPayments);
-router.get('/due/:supplierId', isAuthenticated,controller.getSupplierDue);
+router.post('/',isAuthenticated,checkPermission('access_financial_data'), controller.makePayment);
+router.get('/',isAuthenticated,checkPermission('access_financial_data'), controller.getAllPayments);
+router.get('/due/:supplierId',isAuthenticated,checkPermission('access_financial_data'),controller.getSupplierDue);
 
 module.exports = router;
