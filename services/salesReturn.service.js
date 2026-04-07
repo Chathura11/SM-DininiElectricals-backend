@@ -5,6 +5,8 @@ const Inventory = require('../models/inventory.model');
 const SalesReturn = require('../models/salesReturn.model');
 const Account = require('../models/account.model');
 const JournalEntry = require('../models/journal.model');
+const CustomerLoan = require('../models/customerLoan.model');
+const LoanPayment = require('../models/loanPayment.model');
 
 exports.processReturn = async ({ transactionId, items, userId }) => {
   const session = await mongoose.startSession();
@@ -107,28 +109,132 @@ exports.processReturn = async ({ transactionId, items, userId }) => {
       // ================= ACCOUNTING =================
 
       // 🔵 CASE 1: PENDING → ONLY INVENTORY + COGS
-      if (isPending) {
-        const inventoryAcc = await Account.findOne({ name: 'Inventory' }).session(session);
-        const cogsAcc = await Account.findOne({ name: 'COGS' }).session(session);
 
-        if (!inventoryAcc || !cogsAcc) {
+      //old
+      // if (isPending) {
+      //   const inventoryAcc = await Account.findOne({ name: 'Inventory' }).session(session);
+      //   const cogsAcc = await Account.findOne({ name: 'COGS' }).session(session);
+
+      //   if (!inventoryAcc || !cogsAcc) {
+      //     throw new Error('Accounts not found');
+      //   }
+
+      //   inventoryAcc.balance += totalReturnCost;
+      //   cogsAcc.balance -= totalReturnCost;
+
+      //   await Promise.all([
+      //     inventoryAcc.save({ session }),
+      //     cogsAcc.save({ session })
+      //   ]);
+
+      //   await JournalEntry.create([{
+      //     description: `Pending Sale Return - Restore inventory`,
+      //     debit: { account: inventoryAcc._id, amount: totalReturnCost },
+      //     credit: { account: cogsAcc._id, amount: totalReturnCost }
+      //   }], { session });
+
+      //   return;
+      // }
+
+      //new
+      if (isPending) {
+
+        const loan = await CustomerLoan.findOne({ transaction: transactionId }).session(session);
+        if (!loan) throw new Error('Loan not found for this transaction');
+      
+        const payments = await LoanPayment.find({ loan: loan._id }).session(session);
+        const totalPaid = payments.reduce((sum, p) => sum + p.amount, 0);
+      
+        // ================= ACCOUNT =================
+        const [inventoryAcc, cogsAcc, receivableAcc, cashAcc] = await Promise.all([
+          Account.findOne({ name: 'Inventory' }).session(session),
+          Account.findOne({ name: 'COGS' }).session(session),
+          Account.findOne({ name: 'Accounts Receivable' }).session(session),
+          Account.findOne({ name: 'Cash' }).session(session),
+        ]);
+      
+        if (!inventoryAcc || !cogsAcc || !receivableAcc) {
           throw new Error('Accounts not found');
         }
-
+      
+        // ================= INVENTORY =================
         inventoryAcc.balance += totalReturnCost;
         cogsAcc.balance -= totalReturnCost;
+      
+        // ================= LOAN REDUCTION =================
+        loan.totalAmount -= totalReturnAmount;
+        loan.balanceAmount -= totalReturnAmount;
+      
+        if (loan.balanceAmount < 0) loan.balanceAmount = 0;
+      
+        // ================= ACCOUNT RECEIVABLE =================
+        receivableAcc.balance -= totalReturnAmount;
+      
+        const journalEntries = [];
 
-        await Promise.all([
-          inventoryAcc.save({ session }),
-          cogsAcc.save({ session })
-        ]);
+        const salesAcc = await Account.findOne({ name: 'Sales Revenue' }).session(session);
 
-        await JournalEntry.create([{
-          description: `Pending Sale Return - Restore inventory`,
+        if (!salesAcc) throw new Error('Sales Revenue account not found');
+      
+        // 🔵 Reduce receivable (sale reversal part)
+        journalEntries.push({
+          description: `Loan Adjustment - Sales Return`,
+          debit: { account: salesAcc._id, amount: totalReturnAmount },
+          credit: { account: receivableAcc._id, amount: totalReturnAmount }
+        });
+      
+        // 🔵 Inventory restore
+        journalEntries.push({
+          description: `Inventory Restore - Sales Return`,
           debit: { account: inventoryAcc._id, amount: totalReturnCost },
           credit: { account: cogsAcc._id, amount: totalReturnCost }
-        }], { session });
-
+        });
+      
+        // ================= IF CUSTOMER ALREADY PAID =================
+        if (totalPaid > 0) {
+      
+          // If paid amount > new loan → refund extra
+          if (totalPaid > loan.totalAmount) {
+            const refund = totalPaid - loan.totalAmount;
+      
+            if (!cashAcc) throw new Error('Cash account not found');
+      
+            cashAcc.balance -= refund;
+      
+            journalEntries.push({
+              description: `Refund due to sales return`,
+              debit: { account: receivableAcc._id, amount: refund },
+              credit: { account: cashAcc._id, amount: refund }
+            });
+      
+            loan.paidAmount = loan.totalAmount;
+            loan.balanceAmount = 0;
+          } else {
+            loan.balanceAmount = loan.totalAmount - totalPaid;
+            loan.paidAmount = totalPaid;
+          }
+        }
+      
+        // ================= SAVE =================
+        await Promise.all([
+          inventoryAcc.save({ session }),
+          cogsAcc.save({ session }),
+          receivableAcc.save({ session }),
+          loan.save({ session }),
+          cashAcc?.save({ session })
+        ]);
+      
+        await JournalEntry.insertMany(journalEntries, { session });
+      
+        // ================= STATUS =================
+        if (loan.balanceAmount === 0) {
+          transaction.status = 'Completed';
+        } else {
+          transaction.status = 'Pending';
+        }
+      
+        await transaction.save({ session });
+      
         return;
       }
 

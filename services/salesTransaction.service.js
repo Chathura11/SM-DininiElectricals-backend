@@ -7,6 +7,8 @@ const Inventory = require('../models/inventory.model');
 const accountService = require('./account.service.js'); 
 const JournalEntry = require('../models/journal.model');
 const Account = require('../models/account.model');
+const CustomerLoan = require('../models/customerLoan.model'); //loan
+const LoanPayment = require('../models/loanPayment.model.js');
 
 async function createSalesTransaction({ userId, customerName, paymentMethod, status, items }) {
   const session = await mongoose.startSession();
@@ -19,6 +21,7 @@ async function createSalesTransaction({ userId, customerName, paymentMethod, sta
 
     const transactionItems = [];
 
+    // ================= PRODUCTS LOOP =================
     for (const item of items) {
       const product = await Product.findById(item.product).session(session);
       if (!product) throw new Error(`Product not found`);
@@ -26,8 +29,11 @@ async function createSalesTransaction({ userId, customerName, paymentMethod, sta
       const inventory = await Inventory.findOne({ product: product._id }).session(session);
       if (!inventory) throw new Error(`Inventory not found`);
 
-      if (inventory.quantity < item.quantity) throw new Error(`Not enough stock`);
+      if (inventory.quantity < item.quantity) {
+        throw new Error(`Not enough stock`);
+      }
 
+      // Reduce stock
       inventory.quantity -= item.quantity;
       await inventory.save({ session });
 
@@ -54,6 +60,7 @@ async function createSalesTransaction({ userId, customerName, paymentMethod, sta
       });
     }
 
+    // ================= CREATE TRANSACTION =================
     const invoiceNo = await generateInvoiceNo();
 
     const salesTransaction = new SalesTransaction({
@@ -62,13 +69,14 @@ async function createSalesTransaction({ userId, customerName, paymentMethod, sta
       customerName,
       totalAmount,
       totalProfit,
-      discount: 0, // overall discount can be handled separately
+      discount: 0,
       paymentMethod,
       status,
     });
 
     await salesTransaction.save({ session });
 
+    // ================= SAVE ITEMS =================
     for (const item of transactionItems) {
       await TransactionItem.create([{
         transaction: salesTransaction._id,
@@ -81,19 +89,93 @@ async function createSalesTransaction({ userId, customerName, paymentMethod, sta
       }], { session });
     }
 
-    // Accounting
-    await accountService.recordSale({
-      salePrice: status === 'Free' ? 0 : totalAmount,
-      costPrice: totalCost,
-      customerName,
-      status,
-      updateInventory: true
+    // ================= ACCOUNTING =================
+    const [cash, receivable, sales, inventoryAcc, cogs] = await Promise.all([
+      Account.findOne({ name: 'Cash' }).session(session),
+      Account.findOne({ name: 'Accounts Receivable' }).session(session),
+      Account.findOne({ name: 'Sales Revenue' }).session(session),
+      Account.findOne({ name: 'Inventory' }).session(session),
+      Account.findOne({ name: 'COGS' }).session(session),
+    ]);
+
+    if (!inventoryAcc || !cogs || !sales) {
+      throw new Error('Accounts not found');
+    }
+
+    const journalEntries = [];
+
+    // ========= 1. SALE SIDE =========
+    if (status === 'Completed' && totalAmount > 0) {
+      if (!cash) throw new Error('Cash account not found');
+
+      cash.balance += totalAmount;
+      sales.balance += totalAmount;
+
+      journalEntries.push({
+        description: `Cash Sale - ${customerName}`,
+        debit: { account: cash._id, amount: totalAmount },
+        credit: { account: sales._id, amount: totalAmount }
+      });
+    }
+
+    // ✅ LOAN SALE
+    if (status === 'Pending' && totalAmount > 0) {
+      if (!receivable) throw new Error('Accounts Receivable not found');
+
+      receivable.balance += totalAmount;
+      sales.balance += totalAmount;
+
+      journalEntries.push({
+        description: `Credit Sale - ${customerName}`,
+        debit: { account: receivable._id, amount: totalAmount },
+        credit: { account: sales._id, amount: totalAmount }
+      });
+
+      // ✅ CREATE LOAN RECORD
+      await CustomerLoan.create([{
+        customerName,
+        transaction: salesTransaction._id,
+        totalAmount,
+        paidAmount: 0,
+        balanceAmount: totalAmount,
+        status: 'Pending'
+      }], { session });
+    }
+
+    // ========= 2. INVENTORY & COGS =========
+    inventoryAcc.balance -= totalCost;
+    cogs.balance += totalCost;
+
+    journalEntries.push({
+      description: `COGS - ${customerName}`,
+      debit: { account: cogs._id, amount: totalCost },
+      credit: { account: inventoryAcc._id, amount: totalCost }
     });
 
+    // ================= SAVE ACCOUNTS =================
+    const updates = [inventoryAcc.save({ session }), cogs.save({ session }), sales.save({ session })];
+
+    if (status === 'Completed') {
+      updates.push(cash.save({ session }));
+    }
+
+    if (status === 'Pending') {
+      updates.push(receivable.save({ session }));
+    }
+
+    await Promise.all(updates);
+
+    // ================= JOURNAL =================
+    if (journalEntries.length > 0) {
+      await JournalEntry.insertMany(journalEntries, { session });
+    }
+
+    // ================= COMMIT =================
     await session.commitTransaction();
     session.endSession();
 
     return salesTransaction;
+
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
@@ -130,7 +212,143 @@ async function getAllSalesTransactions() {
   return detailedTransactions;
 }
 
+//old
+// async function reverseTransaction(transactionId, userId) {
+//   const session = await mongoose.startSession();
+//   session.startTransaction();
 
+//   try {
+//     const transaction = await SalesTransaction.findById(transactionId).session(session);
+//     if (!transaction) throw new Error('Transaction not found');
+//     if (transaction.status === 'Cancelled') throw new Error('Already cancelled');
+
+//     const isCompleted = transaction.status === 'Completed';
+//     const isFree = transaction.status === 'Free';
+//     const isPending = transaction.status === 'Pending';
+
+//     // ✅ ADD HERE
+//     if (isPending) {
+//       const loan = await CustomerLoan.findOne({ transaction: transactionId }).session(session);
+
+//       if (loan) {
+//         if (loan.paidAmount > 0) {
+//           throw new Error('Cannot reverse transaction. Partial payment already made for this loan.');
+//         }
+
+//         const payments = await LoanPayment.find({ loan: loan._id }).session(session);
+
+//         if (payments.length > 0) {
+//           throw new Error('Cannot reverse transaction. Loan has payment records.');
+//         }
+//       }
+//     }
+
+//     const totalSale = (isCompleted && !isFree)
+//       ? transaction.totalAmount
+//       : 0;
+
+//     transaction.status = 'Cancelled';
+//     transaction.reversedBy = userId;
+//     transaction.reversedAt = new Date();
+//     await transaction.save({ session });
+
+//     const items = await TransactionItem.find({ transaction: transactionId }).session(session);
+
+//     let totalCost = 0;
+
+//     // ================= INVENTORY =================
+//     for (const item of items) {
+//       const inventory = await Inventory.findOne({ product: item.product }).session(session);
+
+//       if (!inventory) {
+//         await Inventory.create([{
+//           product: item.product,
+//           quantity: item.quantity
+//         }], { session });
+//       } else {
+//         inventory.quantity += item.quantity;
+//         inventory.lastUpdated = new Date();
+//         await inventory.save({ session });
+//       }
+
+//       totalCost += (Number(item.costPrice) || 0) * (Number(item.quantity) || 0);
+//     }
+
+//     // ================= ACCOUNTING =================
+
+//     const [cash, sales, inventoryAcc, cogs] = await Promise.all([
+//       Account.findOne({ name: 'Cash' }).session(session),
+//       Account.findOne({ name: 'Sales Revenue' }).session(session),
+//       Account.findOne({ name: 'Inventory' }).session(session),
+//       Account.findOne({ name: 'COGS' }).session(session),
+//     ]);
+
+//     if (!inventoryAcc || !cogs) {
+//       throw new Error('Accounts not found');
+//     }
+
+//     const journalEntries = [];
+
+//     // ✅ 1. Reverse revenue ONLY for completed (non-free)
+//     if (isCompleted && !isFree && totalSale > 0) {
+//       if (!cash || !sales) {
+//         throw new Error('Accounts not found');
+//       }
+
+//       cash.balance -= totalSale;
+//       sales.balance -= totalSale;
+
+//       journalEntries.push({
+//         description: `Reversal - Sale Refund ${transactionId}`,
+//         debit: { account: sales._id, amount: totalSale },
+//         credit: { account: cash._id, amount: totalSale }
+//       });
+//     }
+
+//     // ✅ 2. ALWAYS reverse inventory & COGS (VERY IMPORTANT FIX)
+//     if (isPending || isCompleted || isFree) {
+//       inventoryAcc.balance += totalCost;
+//       cogs.balance -= totalCost;
+
+//       journalEntries.push({
+//         description: `Reversal - Inventory Restore ${transactionId}`,
+//         debit: { account: inventoryAcc._id, amount: totalCost },
+//         credit: { account: cogs._id, amount: totalCost }
+//       });
+//     }
+
+//     // ================= SAVE =================
+//     const updates = [
+//       inventoryAcc.save({ session }),
+//       cogs.save({ session })
+//     ];
+
+//     if (isCompleted && !isFree && totalSale > 0) {
+//       updates.push(
+//         cash.save({ session }),
+//         sales.save({ session })
+//       );
+//     }
+
+//     await Promise.all(updates);
+
+//     if (journalEntries.length > 0) {
+//       await JournalEntry.insertMany(journalEntries, { session });
+//     }
+
+//     await session.commitTransaction();
+//     session.endSession();
+
+//     return { message: 'Transaction reversed successfully' };
+
+//   } catch (err) {
+//     await session.abortTransaction();
+//     session.endSession();
+//     throw err;
+//   }
+// }
+
+//new
 async function reverseTransaction(transactionId, userId) {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -148,16 +366,29 @@ async function reverseTransaction(transactionId, userId) {
       ? transaction.totalAmount
       : 0;
 
+    // ================= LOAN CHECK =================
+    let loan = null;
+
+    if (isPending) {
+      loan = await CustomerLoan.findOne({ transaction: transactionId }).session(session);
+
+      if (loan && loan.paidAmount > 0) {
+        throw new Error('Cannot reverse. Loan already has payments');
+      }
+    }
+
+    // ================= UPDATE TRANSACTION =================
     transaction.status = 'Cancelled';
     transaction.reversedBy = userId;
     transaction.reversedAt = new Date();
     await transaction.save({ session });
 
+    // ================= GET ITEMS =================
     const items = await TransactionItem.find({ transaction: transactionId }).session(session);
 
     let totalCost = 0;
 
-    // ================= INVENTORY =================
+    // ================= INVENTORY RESTORE =================
     for (const item of items) {
       const inventory = await Inventory.findOne({ product: item.product }).session(session);
 
@@ -175,68 +406,89 @@ async function reverseTransaction(transactionId, userId) {
       totalCost += (Number(item.costPrice) || 0) * (Number(item.quantity) || 0);
     }
 
-    // ================= ACCOUNTING =================
-
-    const [cash, sales, inventoryAcc, cogs] = await Promise.all([
+    // ================= ACCOUNTS =================
+    const [cash, sales, inventoryAcc, cogs, receivable] = await Promise.all([
       Account.findOne({ name: 'Cash' }).session(session),
       Account.findOne({ name: 'Sales Revenue' }).session(session),
       Account.findOne({ name: 'Inventory' }).session(session),
       Account.findOne({ name: 'COGS' }).session(session),
+      Account.findOne({ name: 'Accounts Receivable' }).session(session),
     ]);
 
-    if (!inventoryAcc || !cogs) {
+    if (!inventoryAcc || !cogs || !sales) {
       throw new Error('Accounts not found');
     }
 
     const journalEntries = [];
 
-    // ✅ 1. Reverse revenue ONLY for completed (non-free)
+    // ================= 1. REVERSE COMPLETED SALE =================
     if (isCompleted && !isFree && totalSale > 0) {
-      if (!cash || !sales) {
-        throw new Error('Accounts not found');
-      }
+      if (!cash) throw new Error('Cash account not found');
 
       cash.balance -= totalSale;
       sales.balance -= totalSale;
 
       journalEntries.push({
-        description: `Reversal - Sale Refund ${transactionId}`,
+        description: `Reversal - Cash Sale ${transactionId}`,
         debit: { account: sales._id, amount: totalSale },
         credit: { account: cash._id, amount: totalSale }
       });
     }
 
-    // ✅ 2. ALWAYS reverse inventory & COGS (VERY IMPORTANT FIX)
-    if (isPending || isCompleted || isFree) {
-      inventoryAcc.balance += totalCost;
-      cogs.balance -= totalCost;
+    // ================= 2. REVERSE PENDING SALE =================
+    if (isPending && loan) {
+      if (!receivable) throw new Error('Accounts Receivable not found');
+
+      receivable.balance -= loan.totalAmount;
+      sales.balance -= loan.totalAmount;
 
       journalEntries.push({
-        description: `Reversal - Inventory Restore ${transactionId}`,
-        debit: { account: inventoryAcc._id, amount: totalCost },
-        credit: { account: cogs._id, amount: totalCost }
+        description: `Reversal - Credit Sale ${transactionId}`,
+        debit: { account: sales._id, amount: loan.totalAmount },
+        credit: { account: receivable._id, amount: loan.totalAmount }
       });
+
+      // ✅ Mark loan as cancelled (recommended)
+      loan.status = 'Cancelled';
+      await loan.save({ session });
+
+      // ❌ Alternative:
+      // await CustomerLoan.deleteOne({ _id: loan._id }).session(session);
     }
 
-    // ================= SAVE =================
+    // ================= 3. INVENTORY & COGS REVERSAL =================
+    inventoryAcc.balance += totalCost;
+    cogs.balance -= totalCost;
+
+    journalEntries.push({
+      description: `Reversal - Inventory Restore ${transactionId}`,
+      debit: { account: inventoryAcc._id, amount: totalCost },
+      credit: { account: cogs._id, amount: totalCost }
+    });
+
+    // ================= SAVE ACCOUNTS =================
     const updates = [
       inventoryAcc.save({ session }),
-      cogs.save({ session })
+      cogs.save({ session }),
+      sales.save({ session })
     ];
 
-    if (isCompleted && !isFree && totalSale > 0) {
-      updates.push(
-        cash.save({ session }),
-        sales.save({ session })
-      );
+    if (isCompleted && totalSale > 0) {
+      updates.push(cash.save({ session }));
+    }
+
+    if (isPending && loan) {
+      updates.push(receivable.save({ session }));
     }
 
     await Promise.all(updates);
 
+    // ================= JOURNAL =================
     if (journalEntries.length > 0) {
       await JournalEntry.insertMany(journalEntries, { session });
     }
 
+    // ================= COMMIT =================
     await session.commitTransaction();
     session.endSession();
 
@@ -248,6 +500,7 @@ async function reverseTransaction(transactionId, userId) {
     throw err;
   }
 }
+
 async function markTransactionCompleted(transactionId) {
   const transaction = await SalesTransaction.findById(transactionId);
 
