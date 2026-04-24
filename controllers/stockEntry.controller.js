@@ -1,4 +1,4 @@
-const { createStockEntry,getAllStockEntries,getAllStockEntryItems,getFIFOStockItem,getAllStockEntriesDetailed} = require('../services/stockEntry.service');
+const { createStockEntry,getAllStockEntries,getAllStockEntryItems,getFIFOStockItem,getAllStockEntriesDetailed,deleteStockEntry} = require('../services/stockEntry.service');
 
 exports.CreateStockEntry = async (req, res) => {
     try {
@@ -54,4 +54,25 @@ exports.GetAllStockEntries = async (req, res) => {
       res.status(500).json({ success: false, message: error.message });
     }
   }
+
+
+  // controllers/stockEntryController.js
+
+exports.deleteStockEntry = async (req, res) => {
+  try {
+    const stockEntryId = req.params.id;
+
+    const result = await deleteStockEntry(stockEntryId);
+
+    res.status(200).json({
+      message: 'Stock entry deleted successfully',
+      id: result
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      message: error.message
+    });
+  }
+};
 

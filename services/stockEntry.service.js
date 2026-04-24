@@ -4,6 +4,8 @@ const Inventory = require('../models/inventory.model');
 const Product = require('../models/product.model');
 const accountService = require('./account.service.js'); 
 const mongoose = require('mongoose');
+const Account = require('../models/account.model.js');
+const JournalEntry = require('../models/journal.model.js');
 
 exports.createStockEntry = async (data, user) => {
   const { supplier, invoiceNumber, items, location } = data;
@@ -163,3 +165,79 @@ exports.getAllStockEntries = async () => {
   
     return totalCost / quantityToSell;
   };
+
+
+  // services/stockEntryService.js
+
+exports.deleteStockEntry = async (stockEntryId) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    // 1. Get stock entry
+    const stockEntry = await StockEntry.findById(stockEntryId).session(session);
+    if (!stockEntry) {
+      throw new Error('Stock entry not found');
+    }
+
+    // 2. Get related items
+    const items = await StockEntryItem.find({ stockEntry: stockEntryId }).session(session);
+
+    let totalAmount = 0;
+
+    // 3. Reverse inventory
+    for (const item of items) {
+      const { product, quantity, costPrice } = item;
+
+      totalAmount += quantity * costPrice;
+
+      const inventory = await Inventory.findOne({ product }).session(session);
+
+      if (!inventory || inventory.quantity < quantity) {
+        throw new Error('Invalid inventory state. Cannot delete.');
+      }
+
+      inventory.quantity -= quantity;
+      await inventory.save({ session });
+    }
+
+    // 4. Reverse accounts
+    const inventoryAccount = await Account.findOne({ name: 'Inventory' }).session(session);
+    const payableAccount = await Account.findOne({ name: 'Accounts Payable' }).session(session);
+
+    if (!inventoryAccount || !payableAccount) {
+      throw new Error('Accounts not found');
+    }
+
+    inventoryAccount.balance -= totalAmount;
+    payableAccount.balance -= totalAmount;
+
+    await Promise.all([
+      inventoryAccount.save({ session }),
+      payableAccount.save({ session })
+    ]);
+
+    // 5. Create reverse journal entry
+    await JournalEntry.create([{
+      description: `Reversal of Stock Entry ${stockEntry.invoiceNumber || ''}`,
+      debit: { account: payableAccount._id, amount: totalAmount },
+      credit: { account: inventoryAccount._id, amount: totalAmount }
+    }], { session });
+
+    // 6. Delete items
+    await StockEntryItem.deleteMany({ stockEntry: stockEntryId }).session(session);
+
+    // 7. Delete stock entry
+    await StockEntry.findByIdAndDelete(stockEntryId).session(session);
+
+    await session.commitTransaction();
+    session.endSession();
+
+    return stockEntryId;
+
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    throw error;
+  }
+};
