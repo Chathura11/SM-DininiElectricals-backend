@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const SupplierPayment = require('../models/supplierPayment.model');
+const PurchaseReturn = require('../models/purchaseReturn.model');
 const Account = require('../models/account.model');
 const JournalEntry = require('../models/journal.model');
 const StockEntry = require('../models/stockEntry.model');
@@ -131,9 +132,21 @@ exports.getAllPayments = async () => {
         }
       }
     ]);
+
+    // ✅ Total Purchase Returns (IMPORTANT)
+  const returns = await PurchaseReturn.aggregate([
+    { $match: { supplier: objectId } },
+    {
+      $group: {
+        _id: null,
+        total: { $sum: "$totalAmount" }
+      }
+    }
+  ]);
   
-    const totalPurchase = purchases[0]?.total || 0;
-    const totalPaid = payments[0]?.total || 0;
-  
-    return totalPurchase - totalPaid;
-  };
+  const totalPurchase = purchases[0]?.total || 0;
+  const totalPaid = payments[0]?.total || 0;
+  const totalReturn = returns[0]?.total || 0;
+
+  return totalPurchase - totalPaid - totalReturn;
+};

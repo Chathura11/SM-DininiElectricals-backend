@@ -80,29 +80,34 @@ exports.createStockEntry = async (data, user) => {
   }
 };
   
-  exports.getAllStockEntriesDetailed = async ()=> {
-    // Find all stock entries
-    const entries = await StockEntry.find()
-      .populate('supplier', 'name') // Populate supplier name only
-      .populate('createdBy', 'username') // Populate creator username
-      .lean();
-  
-    // For each entry, find related StockEntryItems and populate product info
-    const entriesWithItems = await Promise.all(
-      entries.map(async (entry) => {
-        const items = await StockEntryItem.find({ stockEntry: entry._id })
-          .populate('product', 'name')
-          .lean();
-  
-        return {
-          ...entry,
-          items,
-        };
+exports.getAllStockEntriesDetailed = async () => {
+
+  const entries = await StockEntry.find()
+    .populate('supplier', 'name')
+    .populate('createdBy', 'username')
+    .sort({ createdAt: -1 })
+    .lean();
+
+  const entriesWithItems = await Promise.all(
+
+    entries.map(async (entry) => {
+
+      const items = await StockEntryItem.find({
+        stockEntry: entry._id
       })
-    );
-  
-    return entriesWithItems;
-  }
+      .populate('product', 'name code sellingPrice')
+      .lean();
+
+      return {
+        ...entry,
+        items
+      };
+    })
+
+  );
+
+  return entriesWithItems;
+};
 
 
 exports.getAllStockEntries = async () => {
