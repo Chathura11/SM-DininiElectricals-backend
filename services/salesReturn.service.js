@@ -175,6 +175,9 @@ exports.processReturn = async ({ transactionId, items, userId }) => {
         const salesAcc = await Account.findOne({ name: 'Sales Revenue' }).session(session);
 
         if (!salesAcc) throw new Error('Sales Revenue account not found');
+
+        // =================SALES REVENUE =================
+        salesAcc.balance -= totalReturnAmount;
       
         // 🔵 Reduce receivable (sale reversal part)
         journalEntries.push({
@@ -221,7 +224,8 @@ exports.processReturn = async ({ transactionId, items, userId }) => {
           cogsAcc.save({ session }),
           receivableAcc.save({ session }),
           loan.save({ session }),
-          cashAcc?.save({ session })
+          cashAcc?.save({ session }),
+          salesAcc.save({ session }),
         ]);
       
         await JournalEntry.insertMany(journalEntries, { session });
